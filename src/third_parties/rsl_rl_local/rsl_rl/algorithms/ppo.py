@@ -146,9 +146,36 @@ class PPO:
             episode_masks,
             _,  # rnd_state_batch - not used anymore
         ) in generator:
-            # TODO ----- START -----
-            # Implement the PPO update step
-            # TODO ----- END -----
+            # PPO update step
+            self.actor_critic.act(observations, masks=episode_masks, hidden_states=hidden_states)
+            actions_log_prob = self.actor_critic.get_actions_log_prob(sampled_actions)
+            values = self.actor_critic.evaluate(critic_observations)
+            entropy = self.actor_critic.entropy().mean()
+
+            ratio = torch.exp(actions_log_prob - prev_log_probs)
+
+            surrogate = ratio * advantage_estimates
+            surrogate_clipped = ratio.clamp(1 - self.clip_param, 1 + self.clip_param) * advantage_estimates
+            surrogate_loss = torch.min(surrogate, surrogate_clipped).mean()
+
+            if self.use_clipped_value_loss:
+                values_clipped = value_targets + (values - value_targets).clamp(-self.clip_param, self.clip_param)
+                value_loss = torch.max(
+                    (values - discounted_returns).pow(2),
+                    (values_clipped - discounted_returns).pow(2)
+                ).mean()
+            else:
+                value_loss = (values - discounted_returns).pow(2).mean()
+            
+            loss = -surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            mean_entropy += entropy.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
