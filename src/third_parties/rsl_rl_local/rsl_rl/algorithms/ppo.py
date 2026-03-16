@@ -150,7 +150,7 @@ class PPO:
             self.actor_critic.act(observations, masks=episode_masks, hidden_states=hidden_states)
             actions_log_prob = self.actor_critic.get_actions_log_prob(sampled_actions)
             values = self.actor_critic.evaluate(critic_observations)
-            entropy = self.actor_critic.entropy().mean()
+            entropy = self.actor_critic.entropy.mean()
 
             ratio = torch.exp(actions_log_prob - prev_log_probs)
 
