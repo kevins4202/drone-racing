@@ -678,10 +678,14 @@ class QuadcopterEnv(DirectRLEnv):
         # will not be used during runtime for the official class race.
         #TODO ----- END ----- [OPTIONAL]
 
+        # Kill if drone passed through a gate from the wrong side
+        cond_wrong_side = self._wrong_side_crossed > 0
+
         died = (
             cond_max_h
           | cond_h_min_time
           | cond_crashed
+          | cond_wrong_side
         )
 
         # timeout conditions

@@ -109,8 +109,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reward scales
     rewards = {
         'pass_reward_scale':  100.0,   # sparse gate passage bonus
-        'vel_reward_scale':     0.3,   # velocity toward approach WP, clamped [0, 5 m/s]
-        'time_penalty_scale':  -0.05,  # per-step cost → forces fast laps, kills hover local opt.
+        'vel_reward_scale':     0.05,   # velocity toward approach WP, clamped [0, 5 m/s]
+        'time_penalty_scale':   0.0,   # no time pressure — speed is not rewarded
         'crash_reward_scale':  -1.0,   # per-timestep contact penalty
         'cmd_reward_scale':   -0.001,  # action smoothness penalty
         'death_cost':         -50.0,   # early termination penalty
