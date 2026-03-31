@@ -21,7 +21,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         actor_hidden_dims=[256, 256],       # was [128, 128]; more capacity for 25d obs
         critic_hidden_dims=[512, 512, 256], # updated for 34d privileged critic obs
         activation="elu",
-        min_std=0.0,
+        min_std=0.01,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
