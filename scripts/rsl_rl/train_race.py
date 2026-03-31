@@ -106,15 +106,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # TODO ----- START ----- Define rewards scales
-    # reward scales
-    progress_goal_reward_scale = 50.0
-    crash_reward = -1.0
+    # Progress: Δ-distance reward (arxiv 2406.12505 λ₁=0.5, scaled to meters/step)
+    # At 2 m/s flight speed → ~0.04 m/step; 1.0 gives balanced signal
+    progress_goal_reward_scale = 1.0
+
+    # Gate pass: dominant sparse signal per gate traversal
+    # 7 gates/lap → 35/lap vs progress ~2–3/lap at 2 m/s → gates are primary objective
+    gate_pass_reward_scale = 5.0
+
+    # Crash: per-step contact penalty (accumulates before 100-step death threshold)
+    # Total crash cost ≈ -0.5*100 + death_cost = -60, meaningful vs ~35 gain per lap
+    crash_reward_scale = -0.5
+
+    # Command cost: paper formula (0.0005*||a|| + 0.0002*||Δa||²) baked into get_rewards()
+    # This scale multiplies that raw cost; negative = penalty
+    cmd_reward_scale = -1.0
+
+    # Terminal penalty on episode end (crash, backwards traversal, altitude violation)
     death_cost = -10.0
 
     rewards = {
         'progress_goal_reward_scale': progress_goal_reward_scale,
-        'crash_reward_scale': crash_reward,
-        'death_cost': death_cost,
+        'gate_pass_reward_scale':     gate_pass_reward_scale,
+        'crash_reward_scale':         crash_reward_scale,
+        'cmd_reward_scale':           cmd_reward_scale,
+        'death_cost':                 death_cost,
     }
     # TODO ----- END -----
 
