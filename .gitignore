@@ -18,3 +18,5 @@
 **/runs/*
 **/logs/*
 **/recordings/*
+
+.env
