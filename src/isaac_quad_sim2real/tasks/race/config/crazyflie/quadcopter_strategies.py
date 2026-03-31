@@ -36,11 +36,14 @@ class DefaultQuadcopterStrategy:
 
         # Initialize episode sums for logging if in training mode
         if self.cfg.is_train and hasattr(env, 'rew'):
-            log_keys = ["pass", "crash", "cmd"]
+            log_keys = ["pass", "crash", "cmd", "progress"]
             self._episode_sums = {
                 key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
                 for key in log_keys
             }
+
+        # Distance buffer for progress reward (initialized to 0; clamped reward means no penalty on first step)
+        self.env._last_distance_to_approach = torch.zeros(self.num_envs, device=self.device)
 
         # Initialize fixed parameters once (no domain randomization)
         # These parameters remain constant throughout the simulation
@@ -103,11 +106,26 @@ class DefaultQuadcopterStrategy:
         u_prev = self.env._previous_actions
         cmd_penalty = torch.norm(u, dim=1) + torch.norm(u - u_prev, dim=1) ** 2
 
+        # 4. Progress reward: dense signal toward approach waypoint (gate_pos + gate_normal * 1m).
+        # Approach waypoint is on the positive-x side of the gate frame (the correct approach side),
+        # which ensures the drone learns to approach from the right direction for each gate including
+        # the powerloop (gates 2 & 3 require approaching from the north). Clamped to >= 0 so the
+        # drone is never penalized for the necessary powerloop or chicane detours.
+        gate_pos = self.env._waypoints[self.env._idx_wp, :3]       # (N, 3)
+        gate_normal = self.env._normal_vectors[self.env._idx_wp]    # (N, 3) world-frame gate x-axis
+        approach_wp_w = gate_pos + gate_normal * 1.0                # 1m in front on approach side
+        drone_pos_w = self.env._robot.data.root_link_pos_w
+        dist_now = torch.norm(drone_pos_w - approach_wp_w, dim=1)
+        progress = self.env._last_distance_to_approach - dist_now
+        self.env._last_distance_to_approach = dist_now.clone()
+        progress_reward = torch.clamp(progress, min=0.0)
+
         if self.cfg.is_train:
             rewards = {
                 "pass": pass_reward * self.env.rew['pass_reward_scale'],
                 "crash": crash_reward * self.env.rew['crash_reward_scale'],
                 "cmd": cmd_penalty * self.env.rew['cmd_reward_scale'],
+                "progress": progress_reward * self.env.rew['progress_reward_scale'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
             reward = torch.where(self.env.reset_terminated,
@@ -196,6 +214,50 @@ class DefaultQuadcopterStrategy:
         self.env._previous_omega_meas[env_ids] = 0.0
         self.env._previous_omega_err[env_ids] = 0.0
         self.env._omega_err_integral[env_ids] = 0.0
+
+        # Reset progress reward buffer (0 → first-step progress clamped to 0, no spurious reward)
+        self.env._last_distance_to_approach[env_ids] = 0.0
+
+        # Domain randomization: randomize dynamics on each episode reset to match eval ranges.
+        # Aero range is narrowed (0.8–1.2×) vs eval (0.5–2×) to avoid slowing early learning —
+        # expand to full range once the policy reliably passes gates.
+        if self.cfg.is_train:
+            # Thrust-to-weight: ±5% of nominal (matches eval range exactly)
+            self.env._thrust_to_weight[env_ids] = (
+                torch.empty(n_reset, device=self.device).uniform_(0.95, 1.05) * self.env._twr_value
+            )
+            # Aerodynamic drag: narrowed to ±20% initially (eval uses 0.5–2.0×)
+            # TODO: expand to (0.5, 2.0) once policy reliably completes laps
+            self.env._K_aero[env_ids, :2] = (
+                torch.empty(n_reset, 1, device=self.device).uniform_(0.8, 1.2).expand(n_reset, 2)
+                * self.env._k_aero_xy_value
+            )
+            self.env._K_aero[env_ids, 2] = (
+                torch.empty(n_reset, device=self.device).uniform_(0.8, 1.2) * self.env._k_aero_z_value
+            )
+            # PID gains roll/pitch: kp/ki ±15%, kd ±30%
+            self.env._kp_omega[env_ids, :2] = (
+                torch.empty(n_reset, 1, device=self.device).uniform_(0.85, 1.15).expand(n_reset, 2)
+                * self.env._kp_omega_rp_value
+            )
+            self.env._ki_omega[env_ids, :2] = (
+                torch.empty(n_reset, 1, device=self.device).uniform_(0.85, 1.15).expand(n_reset, 2)
+                * self.env._ki_omega_rp_value
+            )
+            self.env._kd_omega[env_ids, :2] = (
+                torch.empty(n_reset, 1, device=self.device).uniform_(0.7, 1.3).expand(n_reset, 2)
+                * self.env._kd_omega_rp_value
+            )
+            # PID gains yaw: same ranges as roll/pitch
+            self.env._kp_omega[env_ids, 2] = (
+                torch.empty(n_reset, device=self.device).uniform_(0.85, 1.15) * self.env._kp_omega_y_value
+            )
+            self.env._ki_omega[env_ids, 2] = (
+                torch.empty(n_reset, device=self.device).uniform_(0.85, 1.15) * self.env._ki_omega_y_value
+            )
+            self.env._kd_omega[env_ids, 2] = (
+                torch.empty(n_reset, device=self.device).uniform_(0.7, 1.3) * self.env._kd_omega_y_value
+            )
 
         # Reset joints state
         joint_pos = self.env._robot.data.default_joint_pos[env_ids]
