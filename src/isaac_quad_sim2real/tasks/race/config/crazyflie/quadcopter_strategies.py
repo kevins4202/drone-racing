@@ -39,27 +39,46 @@ class DefaultQuadcopterStrategy:
         # ------------------------------------------------------------------ #
         # cfg.thrust_to_weight is set to 3.15 in QuadcopterEnv.__init__ before
         # this strategy is constructed, so it is safe to reference here.
-        self._twr_min = self.cfg.thrust_to_weight * 0.95
-        self._twr_max = self.cfg.thrust_to_weight * 1.05
-
-        self._k_aero_xy_min = self.cfg.k_aero_xy * 0.5
-        self._k_aero_xy_max = self.cfg.k_aero_xy * 2.0
-        self._k_aero_z_min  = self.cfg.k_aero_z  * 0.5
-        self._k_aero_z_max  = self.cfg.k_aero_z  * 2.0
-
-        self._kp_omega_rp_min = self.cfg.kp_omega_rp * 0.85
-        self._kp_omega_rp_max = self.cfg.kp_omega_rp * 1.15
-        self._ki_omega_rp_min = self.cfg.ki_omega_rp * 0.85
-        self._ki_omega_rp_max = self.cfg.ki_omega_rp * 1.15
-        self._kd_omega_rp_min = self.cfg.kd_omega_rp * 0.70
-        self._kd_omega_rp_max = self.cfg.kd_omega_rp * 1.30
-
-        self._kp_omega_y_min = self.cfg.kp_omega_y * 0.85
-        self._kp_omega_y_max = self.cfg.kp_omega_y * 1.15
-        self._ki_omega_y_min = self.cfg.ki_omega_y * 0.85
-        self._ki_omega_y_max = self.cfg.ki_omega_y * 1.15
-        self._kd_omega_y_min = self.cfg.kd_omega_y * 0.70
-        self._kd_omega_y_max = self.cfg.kd_omega_y * 1.30
+        if self.cfg.is_train:
+            # Wide ranges for training
+            self._twr_min = self.cfg.thrust_to_weight * 0.75
+            self._twr_max = self.cfg.thrust_to_weight * 1.25
+            self._k_aero_xy_min = self.cfg.k_aero_xy * 0.25
+            self._k_aero_xy_max = self.cfg.k_aero_xy * 4.0
+            self._k_aero_z_min  = self.cfg.k_aero_z  * 0.25
+            self._k_aero_z_max  = self.cfg.k_aero_z  * 4.0
+            self._kp_omega_rp_min = self.cfg.kp_omega_rp * 0.60
+            self._kp_omega_rp_max = self.cfg.kp_omega_rp * 1.40
+            self._ki_omega_rp_min = self.cfg.ki_omega_rp * 0.60
+            self._ki_omega_rp_max = self.cfg.ki_omega_rp * 1.40
+            self._kd_omega_rp_min = self.cfg.kd_omega_rp * 0.40
+            self._kd_omega_rp_max = self.cfg.kd_omega_rp * 1.60
+            self._kp_omega_y_min = self.cfg.kp_omega_y * 0.60
+            self._kp_omega_y_max = self.cfg.kp_omega_y * 1.40
+            self._ki_omega_y_min = self.cfg.ki_omega_y * 0.60
+            self._ki_omega_y_max = self.cfg.ki_omega_y * 1.40
+            self._kd_omega_y_min = self.cfg.kd_omega_y * 0.40
+            self._kd_omega_y_max = self.cfg.kd_omega_y * 1.60
+        else:
+            # Narrow ranges for play/video
+            self._twr_min = self.cfg.thrust_to_weight * 0.95
+            self._twr_max = self.cfg.thrust_to_weight * 1.05
+            self._k_aero_xy_min = self.cfg.k_aero_xy * 0.5
+            self._k_aero_xy_max = self.cfg.k_aero_xy * 2.0
+            self._k_aero_z_min  = self.cfg.k_aero_z  * 0.5
+            self._k_aero_z_max  = self.cfg.k_aero_z  * 2.0
+            self._kp_omega_rp_min = self.cfg.kp_omega_rp * 0.85
+            self._kp_omega_rp_max = self.cfg.kp_omega_rp * 1.15
+            self._ki_omega_rp_min = self.cfg.ki_omega_rp * 0.85
+            self._ki_omega_rp_max = self.cfg.ki_omega_rp * 1.15
+            self._kd_omega_rp_min = self.cfg.kd_omega_rp * 0.70
+            self._kd_omega_rp_max = self.cfg.kd_omega_rp * 1.30
+            self._kp_omega_y_min = self.cfg.kp_omega_y * 0.85
+            self._kp_omega_y_max = self.cfg.kp_omega_y * 1.15
+            self._ki_omega_y_min = self.cfg.ki_omega_y * 0.85
+            self._ki_omega_y_max = self.cfg.ki_omega_y * 1.15
+            self._kd_omega_y_min = self.cfg.kd_omega_y * 0.70
+            self._kd_omega_y_max = self.cfg.kd_omega_y * 1.30
 
         # tau_m is not in the randomization spec — set fixed once
         self.env._tau_m[:] = self.env._tau_m_value
@@ -461,8 +480,15 @@ class DefaultQuadcopterStrategy:
         # the drone is on the front face of the gate (correct approach side).
         if self.cfg.is_train:
             x_local = -torch.empty(n_reset, device=self.device).uniform_(0.5, 3.0)
-            y_local =  torch.empty(n_reset, device=self.device).uniform_(-0.4, 0.4)
-            z_local =  torch.empty(n_reset, device=self.device).uniform_(-0.15, 0.15)
+            y_local =  torch.empty(n_reset, device=self.device).uniform_(-1.0, 1.0)
+            z_local =  torch.empty(n_reset, device=self.device).uniform_(-0.4, 0.4)
+
+            # Gate 3: horizontal power loop — spawn east of gate (loop arcs south→east→north→south)
+            # y_local > 0 maps to initial_x = gate_x + y_local (east in world), which is
+            # where the drone is mid-loop before its final southward approach to gate 3.
+            is_gate3 = (waypoint_indices == 3)
+            if is_gate3.any():
+                z_local[is_gate3] = torch.empty(is_gate3.sum().item(), device=self.device).uniform_(0.75, 2.0)
         else:
             x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
             y_local = torch.empty(1, device=self.device).uniform_(-1.0,  1.0)
@@ -498,7 +524,7 @@ class DefaultQuadcopterStrategy:
         direction    = gate_pos_tgt - start_pos
         direction    = direction / (torch.linalg.norm(direction, dim=1, keepdim=True) + 1e-6)
         if self.cfg.is_train:
-            speed = torch.empty(n_reset, device=self.device).uniform_(0.0, 2.0).unsqueeze(1)
+            speed = torch.empty(n_reset, device=self.device).uniform_(0.0, 5.0).unsqueeze(1)
         else:
             speed = torch.zeros(n_reset, 1, device=self.device)
         initial_vel = direction * speed          # (N, 3)
