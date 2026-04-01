@@ -488,7 +488,7 @@ class DefaultQuadcopterStrategy:
             # where the drone is mid-loop before its final southward approach to gate 3.
             is_gate3 = (waypoint_indices == 3)
             if is_gate3.any():
-                z_local[is_gate3] = torch.empty(is_gate3.sum().item(), device=self.device).uniform_(0.75, 2.0)
+                y_local[is_gate3] = torch.empty(is_gate3.sum().item(), device=self.device).uniform_(0.5, 2.0)
         else:
             x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
             y_local = torch.empty(1, device=self.device).uniform_(-1.0,  1.0)
