@@ -423,7 +423,7 @@ class DefaultQuadcopterStrategy:
         # ------------------------------------------------------------------ #
         # Domain randomization                                                #
         # ------------------------------------------------------------------ #
-        self._randomize_params(env_ids, False)
+        self._randomize_params(env_ids, self.cfg.randomize_domain)
 
         # ------------------------------------------------------------------ #
         # Reset per-episode metric accumulators                               #

@@ -32,6 +32,7 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--follow_robot", type=int, default=-1, help="Follow robot index.")
 parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
+parser.add_argument("--randomize", type=lambda x: x.lower() != "false", default=True, help="Enable domain randomization (default: True).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -99,6 +100,7 @@ def main():
     env_cfg.is_train = False
     env_cfg.max_motor_noise_std = 0.0
     env_cfg.seed = args_cli.seed
+    env_cfg.randomize_domain = args_cli.randomize
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

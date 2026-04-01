@@ -219,6 +219,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     # Parameters from train.py or play.py
     is_train = None
+    randomize_domain = True
 
     k_aero_xy = 9.1785e-7
     k_aero_z = 10.311e-7
@@ -648,7 +649,7 @@ class QuadcopterEnv(DirectRLEnv):
         # Compute drag
         lin_vel_b = self._robot.data.root_com_lin_vel_b
         theta_dot = torch.sum(self._motor_speeds, dim=1, keepdim=True)
-        drag = -theta_dot * self._K_aero.unsqueeze(0) * lin_vel_b
+        drag = -theta_dot * self._K_aero * lin_vel_b
 
         self._thrust[:, 0, :] = drag
         self._thrust[:, 0, 2] += wrench[:, 0]
