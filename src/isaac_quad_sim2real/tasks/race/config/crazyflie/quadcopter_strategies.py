@@ -480,15 +480,15 @@ class DefaultQuadcopterStrategy:
         # the drone is on the front face of the gate (correct approach side).
         if self.cfg.is_train:
             x_local = -torch.empty(n_reset, device=self.device).uniform_(0.5, 3.0)
-            y_local =  torch.empty(n_reset, device=self.device).uniform_(-1.0, 1.0)
+            y_local =  torch.empty(n_reset, device=self.device).uniform_(-0.4, 0.4)
             z_local =  torch.empty(n_reset, device=self.device).uniform_(-0.4, 0.4)
 
             # Gate 3: horizontal power loop — spawn east of gate (loop arcs south→east→north→south)
             # y_local > 0 maps to initial_x = gate_x + y_local (east in world), which is
             # where the drone is mid-loop before its final southward approach to gate 3.
-            is_gate3 = (waypoint_indices == 3)
-            if is_gate3.any():
-                z_local[is_gate3] = torch.empty(is_gate3.sum().item(), device=self.device).uniform_(0.75, 2.0)
+            # is_gate3 = (waypoint_indices == 3)
+            # if is_gate3.any():
+            #     z_local[is_gate3] = torch.empty(is_gate3.sum().item(), device=self.device).uniform_(0.75, 2.0)
         else:
             x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
             y_local = torch.empty(1, device=self.device).uniform_(-1.0,  1.0)
