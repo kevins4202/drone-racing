@@ -126,12 +126,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Terminal penalty on episode end (crash, backwards traversal, altitude violation)
     death_cost = -10.0
 
+    # Time penalty: constant -1/step scaled here. r_prog is speed-invariant per gate
+    # (Δ-dist always sums to ~gate spacing regardless of speed), so without this there
+    # is no incentive to fly faster once the policy can navigate gates.
+    # -0.01/step → going 2× faster saves ~100 steps/gate = +1.0 benefit ≈ 20% of a
+    # gate pass. Large enough to reshape speed, small enough not to swamp r_prog.
+    time_penalty_reward_scale = -0.01
+
     rewards = {
         'progress_goal_reward_scale': progress_goal_reward_scale,
         'gate_pass_reward_scale':     gate_pass_reward_scale,
         'crash_reward_scale':         crash_reward_scale,
         'cmd_reward_scale':           cmd_reward_scale,
         'death_cost':                 death_cost,
+        'time_penalty_reward_scale':  time_penalty_reward_scale,
     }
     # TODO ----- END -----
 

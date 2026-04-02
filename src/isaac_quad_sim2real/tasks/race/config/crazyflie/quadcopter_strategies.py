@@ -90,7 +90,7 @@ class DefaultQuadcopterStrategy:
 
         # Episode reward sums for logging
         if self.cfg.is_train and hasattr(env, 'rew'):
-            reward_keys = ["progress_goal", "gate_pass", "crash", "cmd"]
+            reward_keys = ["progress_goal", "gate_pass", "crash", "cmd", "time_penalty"]
             self._episode_sums = {
                 key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
                 for key in reward_keys
@@ -276,6 +276,16 @@ class DefaultQuadcopterStrategy:
                 "gate_pass":     r_pass  * self.env.rew['gate_pass_reward_scale'],
                 "crash":         r_crash * self.env.rew['crash_reward_scale'],
                 "cmd":           r_cmd   * self.env.rew['cmd_reward_scale'],
+                # ---------------------------------------------------------- #
+                # r_time: constant -1 per step, scaled to penalise slow laps.  #
+                # r_prog is speed-invariant per gate (Δ-dist sums to the same  #
+                # total regardless of speed), so without this the policy has   #
+                # no incentive to go faster once it can navigate gates.        #
+                # At scale -0.01: going 2× faster saves ~100 steps/gate →     #
+                # +1.0 benefit, which is 20 % of a gate-pass reward (5.0).    #
+                # ---------------------------------------------------------- #
+                "time_penalty": torch.ones(self.num_envs, device=self.device)
+                                * self.env.rew['time_penalty_reward_scale'],
             }
             reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
@@ -483,12 +493,7 @@ class DefaultQuadcopterStrategy:
             y_local =  torch.empty(n_reset, device=self.device).uniform_(-1.0, 1.0)
             z_local =  torch.empty(n_reset, device=self.device).uniform_(-0.4, 0.4)
 
-            # Gate 3: horizontal power loop — spawn east of gate (loop arcs south→east→north→south)
-            # y_local > 0 maps to initial_x = gate_x + y_local (east in world), which is
-            # where the drone is mid-loop before its final southward approach to gate 3.
-            is_gate3 = (waypoint_indices == 3)
-            if is_gate3.any():
-                y_local[is_gate3] = torch.empty(is_gate3.sum().item(), device=self.device).uniform_(0.5, 2.0)
+  
         else:
             x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
             y_local = torch.empty(1, device=self.device).uniform_(-1.0,  1.0)
