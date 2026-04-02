@@ -116,6 +116,7 @@ def main():
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,
+            "name_prefix": "twr_min_k_aero_max_kp_min_ki_min_kd_max",
         }
         print("[INFO] Recording videos during training.")
         print_dict(video_kwargs, nesting=4)
@@ -128,40 +129,40 @@ def main():
     inner = env.unwrapped
     strat = inner.strategy
     # -- Thrust-to-weight --
-    # inner._thrust_to_weight[:] = strat._twr_min   # 2.99
+    inner._thrust_to_weight[:] = strat._twr_min   # 2.99
     # inner._thrust_to_weight[:] = strat._twr_max   # 3.30
     # -- Aero drag XY --
     # inner._K_aero[:, 0] = strat._k_aero_xy_min   # 0.5x nominal
-    # inner._K_aero[:, 0] = strat._k_aero_xy_max   # 2.0x nominal
+    inner._K_aero[:, 0] = strat._k_aero_xy_max   # 2.0x nominal
     # inner._K_aero[:, 1] = strat._k_aero_xy_min
-    # inner._K_aero[:, 1] = strat._k_aero_xy_max
+    inner._K_aero[:, 1] = strat._k_aero_xy_max
     # -- Aero drag Z --
     # inner._K_aero[:, 2] = strat._k_aero_z_min    # 0.5x nominal
-    # inner._K_aero[:, 2] = strat._k_aero_z_max    # 2.0x nominal
+    inner._K_aero[:, 2] = strat._k_aero_z_max    # 2.0x nominal
     # -- Roll/pitch kp --
-    # inner._kp_omega[:, 0] = strat._kp_omega_rp_min   # 0.85x nominal
+    inner._kp_omega[:, 0] = strat._kp_omega_rp_min   # 0.85x nominal
     # inner._kp_omega[:, 0] = strat._kp_omega_rp_max   # 1.15x nominal
-    # inner._kp_omega[:, 1] = strat._kp_omega_rp_min
+    inner._kp_omega[:, 1] = strat._kp_omega_rp_min
     # inner._kp_omega[:, 1] = strat._kp_omega_rp_max
     # -- Roll/pitch ki --
-    # inner._ki_omega[:, 0] = strat._ki_omega_rp_min   # 0.85x nominal
+    inner._ki_omega[:, 0] = strat._ki_omega_rp_min   # 0.85x nominal
     # inner._ki_omega[:, 0] = strat._ki_omega_rp_max   # 1.15x nominal
-    # inner._ki_omega[:, 1] = strat._ki_omega_rp_min
+    inner._ki_omega[:, 1] = strat._ki_omega_rp_min
     # inner._ki_omega[:, 1] = strat._ki_omega_rp_max
     # -- Roll/pitch kd --
     # inner._kd_omega[:, 0] = strat._kd_omega_rp_min   # 0.70x nominal
-    # inner._kd_omega[:, 0] = strat._kd_omega_rp_max   # 1.30x nominal
+    inner._kd_omega[:, 0] = strat._kd_omega_rp_max   # 1.30x nominal
     # inner._kd_omega[:, 1] = strat._kd_omega_rp_min
-    # inner._kd_omega[:, 1] = strat._kd_omega_rp_max
+    inner._kd_omega[:, 1] = strat._kd_omega_rp_max
     # -- Yaw kp --
-    # inner._kp_omega[:, 2] = strat._kp_omega_y_min    # 0.85x nominal
+    inner._kp_omega[:, 2] = strat._kp_omega_y_min    # 0.85x nominal
     # inner._kp_omega[:, 2] = strat._kp_omega_y_max    # 1.15x nominal
     # -- Yaw ki --
-    # inner._ki_omega[:, 2] = strat._ki_omega_y_min    # 0.85x nominal
+    inner._ki_omega[:, 2] = strat._ki_omega_y_min    # 0.85x nominal
     # inner._ki_omega[:, 2] = strat._ki_omega_y_max    # 1.15x nominal
     # -- Yaw kd --
     # inner._kd_omega[:, 2] = strat._kd_omega_y_min    # 0.70x nominal
-    # inner._kd_omega[:, 2] = strat._kd_omega_y_max    # 1.30x nominal
+    inner._kd_omega[:, 2] = strat._kd_omega_y_max    # 1.30x nominal
     # ─────────────────────────────────────────────────────────────────────────
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
