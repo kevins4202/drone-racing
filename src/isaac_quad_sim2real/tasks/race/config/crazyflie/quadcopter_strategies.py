@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Dict, Optional
 from isaaclab.utils.math import (
     subtract_frame_transforms,
     quat_from_euler_xyz,
+    euler_xyz_from_quat,
+    wrap_to_pi,
     matrix_from_quat,
     quat_mul,
 )
@@ -298,7 +300,7 @@ class DefaultQuadcopterStrategy:
     # Observations                                                            #
     # ---------------------------------------------------------------------- #
 
-     def get_observations(self) -> Dict[str, torch.Tensor]:
+    def get_observations(self) -> Dict[str, torch.Tensor]:
         """Get observations including waypoint positions and drone state."""
         curr_idx = self.env._idx_wp % self.env._waypoints.shape[0]
         next_idx = (self.env._idx_wp + 1) % self.env._waypoints.shape[0]

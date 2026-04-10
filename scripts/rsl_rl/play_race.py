@@ -116,7 +116,7 @@ def main():
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,
-            "name_prefix": "twr_min_k_aero_max_kp_min_ki_min_kd_max",
+            "name_prefix": "video",
         }
         print("[INFO] Recording videos during training.")
         print_dict(video_kwargs, nesting=4)
