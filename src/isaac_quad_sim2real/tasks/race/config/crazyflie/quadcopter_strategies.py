@@ -298,51 +298,65 @@ class DefaultQuadcopterStrategy:
     # Observations                                                            #
     # ---------------------------------------------------------------------- #
 
-    def get_observations(self) -> Dict[str, torch.Tensor]:
-        """20-dim observation vector, all position/velocity in drone body frame.
+     def get_observations(self) -> Dict[str, torch.Tensor]:
+        """Get observations including waypoint positions and drone state."""
+        curr_idx = self.env._idx_wp % self.env._waypoints.shape[0]
+        next_idx = (self.env._idx_wp + 1) % self.env._waypoints.shape[0]
 
-        Layout:
-          v_b         (3)  body-frame linear velocity
-          omega_b     (3)  body-frame angular velocity
-          delta_p0_b  (3)  vector to target gate in body frame
-          delta_p1_b  (3)  vector to next gate in body frame  ← power-loop lookahead
-          q_rel       (4)  quaternion: gate_inv * drone
-          prev_action (4)  previous action
-        """
-        drone_pos_w   = self.env._robot.data.root_link_pos_w       # (N, 3)
-        drone_quat_w  = self.env._robot.data.root_quat_w            # (N, 4) [w,x,y,z]
-        v_b           = self.env._robot.data.root_com_lin_vel_b     # (N, 3) already body frame
-        omega_b       = self.env._robot.data.root_ang_vel_b         # (N, 3) already body frame
+        wp_curr_pos = self.env._waypoints[curr_idx, :3]
+        wp_next_pos = self.env._waypoints[next_idx, :3]
+        quat_curr = self.env._waypoints_quat[curr_idx]
+        quat_next = self.env._waypoints_quat[next_idx]
 
-        # Rotation matrix: body → world; transpose = world → body
-        R_wb = matrix_from_quat(drone_quat_w)        # (N, 3, 3)
-        R_bw = R_wb.transpose(-1, -2)                # (N, 3, 3)
+        rot_curr = matrix_from_quat(quat_curr)
+        rot_next = matrix_from_quat(quat_next)
 
-        # Target gate (current waypoint)
-        gate0_pos_w = self.env._waypoints[self.env._idx_wp, :3]     # (N, 3)
-        delta0_w    = gate0_pos_w - drone_pos_w                      # (N, 3)
-        delta_p0_b  = torch.bmm(R_bw, delta0_w.unsqueeze(-1)).squeeze(-1)  # (N, 3)
+        verts_curr = torch.bmm(self.env._local_square, rot_curr.transpose(1, 2)) + wp_curr_pos.unsqueeze(1) + self.env._terrain.env_origins.unsqueeze(1)
+        verts_next = torch.bmm(self.env._local_square, rot_next.transpose(1, 2)) + wp_next_pos.unsqueeze(1) + self.env._terrain.env_origins.unsqueeze(1)
 
-        # Next gate (lookahead — critical for power loop between gates 2 and 3)
-        num_wp      = self.env._waypoints.shape[0]
-        next_idx    = (self.env._idx_wp + 1) % num_wp
-        gate1_pos_w = self.env._waypoints[next_idx, :3]             # (N, 3)
-        delta1_w    = gate1_pos_w - drone_pos_w                      # (N, 3)
-        delta_p1_b  = torch.bmm(R_bw, delta1_w.unsqueeze(-1)).squeeze(-1)  # (N, 3)
+        waypoint_pos_b_curr, _ = subtract_frame_transforms(
+            self.env._robot.data.root_link_state_w[:, :3].repeat_interleave(4, dim=0),
+            self.env._robot.data.root_link_state_w[:, 3:7].repeat_interleave(4, dim=0),
+            verts_curr.view(-1, 3)
+        )
+        waypoint_pos_b_next, _ = subtract_frame_transforms(
+            self.env._robot.data.root_link_state_w[:, :3].repeat_interleave(4, dim=0),
+            self.env._robot.data.root_link_state_w[:, 3:7].repeat_interleave(4, dim=0),
+            verts_next.view(-1, 3)
+        )
 
-        # Relative orientation: q_rel = q_gate_inv * q_drone
-        gate_quat    = self.env._waypoints_quat[self.env._idx_wp, :]  # (N, 4)
-        gate_quat_inv = gate_quat.clone()
-        gate_quat_inv[:, 1:] *= -1                                     # conjugate = inverse for unit quat
-        q_rel = quat_mul(gate_quat_inv, drone_quat_w)                  # (N, 4)
+        waypoint_pos_b_curr = waypoint_pos_b_curr.view(self.num_envs, 4, 3)
+        waypoint_pos_b_next = waypoint_pos_b_next.view(self.num_envs, 4, 3)
 
-        # Previous action
-        prev_actions = self.env._previous_actions                      # (N, 4)
+        quat_w = self.env._robot.data.root_quat_w
+        attitude_mat = matrix_from_quat(quat_w)
 
-        obs = torch.cat([v_b, omega_b, delta_p0_b, delta_p1_b, q_rel, prev_actions], dim=-1)
-        # Shape: (N, 3+3+3+3+4+4) = (N, 20)
+        obs = torch.cat(
+            [
+                self.env._robot.data.root_com_lin_vel_b,			# 3 dim (linear vel in body frame)
+                attitude_mat.view(attitude_mat.shape[0], -1),			# 9 dim (drone rotation matrix)
+                waypoint_pos_b_curr.view(waypoint_pos_b_curr.shape[0], -1),	# 12 dim (corners of current gate)
+                waypoint_pos_b_next.view(waypoint_pos_b_next.shape[0], -1),	# 12 dim (corners of next gate)
+            ],
+            dim=-1,
+        )
+        observations = {"policy": obs}
 
-        return {"policy": obs}
+        # Update yaw tracking
+        rpy = euler_xyz_from_quat(quat_w)
+        yaw_w = wrap_to_pi(rpy[2])
+
+        delta_yaw = yaw_w - self.env._previous_yaw
+        self.env._previous_yaw = yaw_w
+        self.env._yaw_n_laps += torch.where(delta_yaw < -np.pi, 1, 0)
+        self.env._yaw_n_laps -= torch.where(delta_yaw > np.pi, 1, 0)
+
+        self.env.unwrapped_yaw = yaw_w + 2 * np.pi * self.env._yaw_n_laps
+
+        self.env._previous_actions = self.env._actions.clone()
+
+        return observations
+
 
     # ---------------------------------------------------------------------- #
     # Reset                                                                   #
