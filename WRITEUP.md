@@ -1,160 +1,75 @@
-# Autonomous Drone Racing via Proximal Policy Optimization
+# PPO Update
 
-**Kevin Song · ESE 651 · Isaac Lab / Crazyflie 2.x · April 2026**
+For each mini-batch, the actor is called again on the stored observations to get log probabilities under the current policy, and the critic is called to get current value estimates. This re-evaluation is necessary because the parameters have changed since the rollout was collected.
 
----
+Advantage normalization is applied per mini-batch when enabled, zero-centering and scaling the advantages by their standard deviation. This stabilizes training by preventing batches with unusually large returns from dominating the gradient.
 
-## 1. Problem Formulation
+The adaptive learning rate schedule computes the KL divergence between the old policy (stored mean and std from the rollout) and the current policy using the closed-form Gaussian KL. If the mean KL exceeds twice the target of 0.01, the learning rate is divided by 1.5. If it falls below half the target, it is multiplied by 1.5. This keeps update sizes consistent without requiring a fixed step size.
 
-The task is to train a quadrotor to autonomously navigate a closed gate course as fast as possible, completing laps without crashing. The policy is trained entirely in simulation using massively parallel reinforcement learning (4,096 environments) and transfers to hardware through domain randomization. The track used is the **powerloop** layout — seven gates arranged in a figure-eight with altitude changes from 0.75 m to 2.0 m — chosen for its directional reversals and loop maneuver that stress both agility and long-horizon planning.
+The surrogate loss takes the maximum of the negated unclipped and clipped policy gradient objectives. The ratio of new to old log probabilities is computed, and the advantage-weighted ratio is clipped to the range 1 minus epsilon to 1 plus epsilon (epsilon = 0.2). Taking the max of the two negated terms gives the pessimistic bound that is the core of the PPO constraint.
 
-The MDP is defined as follows. At each policy step (50 Hz), the agent observes a 20-dimensional state vector, outputs a 4-dimensional continuous action, and receives a scalar reward. Episodes terminate upon crash, altitude violation, backwards gate traversal, or timeout at 30 seconds.
-
----
-
-## 2. Dynamics and Action Space
-
-### Motor and Aerodynamic Model
-
-The simulation runs at 500 Hz. Each motor is modeled with a first-order lag (τ_m = 0.005 s) to capture spin-up dynamics:
-
-```
-ω̇ᵢ = (ω_des,i − ωᵢ) / τ_m
-```
-
-Thrust and torque per rotor follow standard quadrotor equations: `Fᵢ = k_η · ωᵢ²` and `Mᵢ = k_m · ωᵢ²`. A 4×4 allocation matrix maps individual rotor forces to collective thrust and body moments. Aerodynamic drag is modeled as velocity-proportional drag scaled by total rotor speed:
-
-```
-F_drag = −(Σωᵢ) · K_aero ⊙ v_b
-```
-
-where `K_aero = [k_xy, k_xy, k_z]` with nominal values 9.18×10⁻⁷ and 10.3×10⁻⁷ respectively.
-
-### Collective Thrust and Body Rate (CTBR) Interface
-
-The policy outputs a 4-dimensional action `a = [T̃, ṗ_des, q̃_des, r̃_des]` clipped to [−1, 1]. Collective thrust is decoded linearly from [−1,1] to [0, TWR·mg]. Desired body rates are scaled to ±100°/s for roll/pitch and ±200°/s for yaw. A 500 Hz PID controller closes the loop on body rate error:
-
-```
-M_cmd = I · (Kₚ·eω + Kᵢ·∫eω − K_d·ω̇_meas)
-```
-
-Roll/pitch gains: Kₚ = 250, Kᵢ = 500, K_d = 2.5. Yaw gains: Kₚ = 120, Kᵢ = 16.7, K_d = 0. This interface decouples high-level trajectory planning (50 Hz policy) from low-level attitude stabilization (500 Hz PID), matching the real Crazyflie firmware architecture and simplifying the learned action space.
+The value loss uses clipped value targets: the predicted value is clipped to within epsilon of the old value estimate before computing the squared error against the discounted return. The max of the clipped and unclipped value losses is taken. The total loss is surrogate plus value loss times 1.0, minus entropy times 0.0. Gradients are clipped to norm 1.0 before the optimizer step.
 
 ---
 
-## 3. Observation Space
+## Reward Function
 
-The 20-dimensional observation vector is constructed entirely in the drone's body frame, making the policy invariant to global position and heading. No global pose is provided, forcing the network to learn relative geometric reasoning.
+The reward has five components summed each timestep, plus a death penalty applied at termination.
 
-| Component | Dim | Description |
-|-----------|-----|-------------|
-| `v_b` | 3 | Body-frame linear velocity (m/s) |
-| `ω_b` | 3 | Body-frame angular velocity (rad/s) |
-| `Δp₀_b` | 3 | Vector from drone to current target gate, in body frame |
-| `Δp₁_b` | 3 | Vector from drone to **next** gate in body frame — lookahead for turn anticipation |
-| `q_rel` | 4 | Relative quaternion: q_gate⁻¹ ⊗ q_drone (alignment with gate normal) |
-| `a_prev` | 4 | Previous action (enables smoothness reasoning) |
+**Progress reward (scale +1.5).** Each step, the reward includes the change in distance to the current target gate: how much closer the drone got compared to the previous step. This is clipped between -0.5 and 5.0. The clip prevents a large negative spike when the target gate switches right after a pass, since the distance baseline resets to the new gate which may be farther away. This component is dense and gives the policy continuous guidance toward each gate.
 
-The lookahead gate vector `Δp₁_b` is critical for the power loop segment, where the drone must begin turning before it fully clears the current gate. Without it, the policy lacks the geometric context needed to pre-rotate. The relative orientation quaternion `q_rel` provides gate-alignment feedback, rewarding approaches that are perpendicular to the gate face.
+**Gate pass reward (scale +5.0).** A sparse bonus of 1.0 is given exactly when the drone successfully passes through a gate in the correct direction. The scale of 5.0 means completing a gate is worth more than any amount of accumulated progress toward it, so the policy is pushed to actually fly through gates rather than just approach them.
 
----
+**Time penalty (scale -0.01).** A constant -1 per step is applied at every timestep. The progress reward is speed-invariant: the total distance change approaching a gate sums to roughly the same value regardless of speed. Without this, the policy has no incentive to go fast once it can navigate gates reliably. At scale -0.01, flying twice as fast through a gate saves roughly 1.0 reward, which is 20% of a single gate pass bonus.
 
-## 4. Reward Function
+**Crash penalty (scale -0.5).** A per-step penalty of 1.0 is applied whenever the contact sensor detects nonzero force on the drone. The crash accumulator only starts counting after 100 steps into an episode, to avoid penalizing brief rim grazes during aggressive lines through early training. Once the count exceeds 100, the episode terminates. Total crash cost over a sustained crash is approximately -50 plus the death penalty.
 
-The reward function follows the formulation of Kaufmann et al. (arXiv 2406.12505) with tuned scales. Four components are summed per timestep, plus a terminal penalty.
+**Command cost (scale -1.0).** The raw penalty is 0.0005 times the action magnitude plus 0.0002 times the squared action change. This discourages large, jerky outputs and produces smoother trajectories that generalize better to hardware.
 
-| Component | Formula | Scale | Purpose |
-|-----------|---------|-------|---------|
-| Progress `r_prog` | `d_{t−1} − d_t`, clipped to [−0.5, 5.0] | +1.5 | Dense guidance toward the active gate |
-| Gate pass `r_pass` | 1 on valid traversal, else 0 (sparse) | +5.0 | Primary racing objective per gate |
-| Crash `r_crash` | 1 if contact force > 0 (per step) | −0.5 | Accumulating penalty for sustained contact |
-| Command `r_cmd` | `0.0005‖a‖ + 0.0002‖Δa‖²` | −0.5 | Penalizes large and jerky control inputs |
-| Death penalty | Applied at episode termination | −10.0 | Discourages risky maneuvers leading to crash |
-
-**Scale rationale.** The gate-pass bonus (5.0) dominates over accumulated progress (~2–3 per lap at 2 m/s), so the policy's primary incentive is gate traversal rather than simply flying fast toward gates. The crash penalty accumulates per step over a 100-step grace window, punishing sustained contact more harshly than brief rim touches during aggressive lines. The command cost discourages actuator saturation and produces smoother trajectories that generalize better to hardware.
-
-### Gate Detection: Sign-Change Method
-
-Each gate has a local coordinate frame where the x-axis is the gate normal. The drone's position is transformed into this frame every step. A valid gate traversal is detected when:
-
-```
-prev_x > 0  ∧  curr_x ≤ 0  ∧  |curr_y| < 0.5  ∧  |curr_z| < 0.5
-```
-
-This ensures the drone crosses the gate front-to-back within the 1 m × 1 m opening. Backwards traversal (x crosses − → +) is detected symmetrically and triggers immediate episode termination by forcing the crash counter to 200 (above the 100-step threshold). On a valid pass, the waypoint index advances modulo the number of gates, and the progress baseline distance resets to the new gate — preventing a large negative spike in `r_prog` at the moment of gate switch.
+**Death penalty (-10.0).** Applied at the final step of any episode ending in crash, altitude violation, or backwards gate traversal. This discourages high-risk behavior that terminates episodes early.
 
 ---
 
-## 5. PPO Training Configuration
+## Gate Detection
 
-### Network Architecture
+The boilerplate detected gate passes by checking if the drone was within 0.1 meters of the gate center, which cannot enforce correct direction or that the drone flies through the opening. I replaced it with a sign-change method.
 
-| | Architecture | Activation |
-|--|--|--|
-| **Actor** | MLP [128, 128] | ELU |
-| **Critic** | MLP [512, 256, 128, 128] | ELU |
+Each gate has a local coordinate frame where the x-axis points along the gate normal. The drone's position is projected into this frame every step. A correct traversal is detected when the x-coordinate was positive last step (drone on the approach side) and is zero or negative this step (drone has crossed through), and the y and z offsets are both within 0.5 meters of center. This enforces that the drone flies through the 1 by 1 meter opening rather than around it.
 
-Initial action noise std: 1.0 (anneals to 0 over training). The critic is intentionally larger than the actor: its job is to accurately estimate value under high variance from random starts and parameter variation, while the actor only needs to encode a compact 20-dim → 4-dim mapping.
+A backwards traversal is detected symmetrically: x going from negative to positive within bounds. This immediately forces episode termination by setting the crash counter above the threshold.
 
-### PPO Hyperparameters
-
-| Parameter | Value |
-|-----------|-------|
-| Steps per env per update | 24 |
-| Mini-batches | 4 |
-| Learning epochs per update | 5 |
-| Clip ε | 0.2 |
-| KL divergence target | 0.01 |
-| Discount γ | 0.99 |
-| GAE λ | 0.95 |
-| Learning rate | 5×10⁻⁴ (adaptive) |
-| Value loss coefficient | 1.0 |
-| Entropy coefficient | 0.0 |
-| Gradient clip norm | 1.0 |
-
-With 4,096 parallel environments and 24 steps per env, each PPO update batch contains **4,096 × 24 = 98,304 transitions**, split into 4 mini-batches of ~24,576 each, processed over 5 gradient epochs. At 50 Hz policy rate this corresponds to approximately 0.48 s of simulated experience per env per update — short enough to keep GAE bias low on a 30 s episode. The adaptive learning rate schedule rescales whenever the mean KL divergence exceeds 0.01, providing stability during the rapid early learning phase.
+When a gate is passed, the waypoint index advances to the next gate, the progress baseline distance resets to the distance to the new gate, and the sign-change tracker is updated relative to the new gate's frame. This baseline reset is what prevents the progress reward from spiking negatively at the moment of gate switch.
 
 ---
 
-## 6. Domain Randomization and Reset Curriculum
+## Observations
 
-### Domain Randomization
+The final observation vector is 20-dimensional and built entirely in the drone's body frame: body-frame linear velocity (3), body-frame angular velocity (3), the vector from the drone to the current target gate in body frame (3), the vector from the drone to the next gate in body frame (3), the relative quaternion between the current gate orientation and the drone orientation (4), and the previous action (4).
 
-Physical parameters are independently randomized per environment at every episode reset to bridge the sim-to-real gap.
+Keeping everything in body frame makes the policy invariant to where on the course the drone is. The same network weights apply at every gate and every position on the track, which helps generalization. The next-gate lookahead vector is the key addition for the powerloop course.
 
-| Parameter | Nominal | Training Range |
-|-----------|---------|----------------|
-| Thrust-to-weight ratio | 3.15 | [0.75×, 1.25×] |
-| Aerodynamic drag k_xy | 9.18×10⁻⁷ | [0.25×, 4.0×] |
-| Aerodynamic drag k_z | 10.3×10⁻⁷ | [0.25×, 4.0×] |
-| Rate PID Kₚ (roll/pitch, yaw) | — | [0.60×, 1.40×] |
-| Rate PID Kᵢ (roll/pitch, yaw) | — | [0.60×, 1.40×] |
-| Rate PID K_d (roll/pitch, yaw) | — | [0.40×, 1.60×] |
-
-Motor time constant τ_m is held fixed (not in the randomization spec) to avoid destabilizing low-level dynamics during early training. Aerodynamic drag is randomized over a 16× range to cover both near-hover low-drag and aggressive-flight high-drag regimes — the largest uncertainty in real-world flight.
-
-### Reset Curriculum
-
-Each episode independently samples a starting gate uniformly at random from all seven waypoints. This exposes the policy to every segment of the course from the very first iteration, preventing the common failure mode where a policy learns only the first few gates and never encounters the rest. Starting pose is randomized as follows:
-
-- **Behind gate**: 0.5–3.0 m (sampled in gate-local frame, rotated to world frame)
-- **Lateral offset**: ±1.0 m
-- **Height offset**: ±0.4 m
-- **Initial heading**: toward gate center ± 0.2 rad yaw noise
-- **Initial speed**: 0–5 m/s along the gate approach direction
-
-The high initial speed range (up to 5 m/s) forces the policy to recover from fast-approach conditions, which are common mid-race after clearing a gate. On the first full reset at startup, episode lengths are staggered uniformly to prevent synchronized resets throughout training.
+The relative orientation quaternion tells the policy how well it is aligned with the gate face, which is useful for approaching perpendicular to the gate rather than at a skewed angle. The previous action lets the policy reason about smoothness directly, reinforcing the command cost penalty.
 
 ---
 
-## 7. Strategy Design: The Power Loop
+## Reset Curriculum
 
-The powerloop track includes segments (gates 2→3 and 5→6) where successive gates face the same lateral direction and the drone must complete a tight reversal at altitude. The second gate lookahead `Δp₁_b` was specifically added to give the policy early warning of this turn. Without it, the policy has no information about the next gate until the current one is passed, and must learn to overshoot and correct — which is slow. With the lookahead, the network can learn to begin banking before crossing the current gate, matching the behavior of championship-level pilots who pre-rotate into apex.
-
-Gate traversal correctness is enforced by the sign-change detector rather than proximity thresholds: the policy must physically fly *through* the gate opening (within the 1 m frame) in the correct direction. This prevents trivially high-reward behaviors such as circling around the gate.
+The starting gate is chosen uniformly at random from all seven waypoints. This exposes the policy to every segment of the course from the very first iteration, preventing the failure mode where the policy learns the first few gates well but never encounters the rest. Starting position is sampled 0.5 to 3 meters behind the gate in gate-local coordinates, with up to 1 meter of lateral offset and 0.4 meters of height variation. Initial heading points toward the gate center with up to 0.2 radians of yaw noise. Initial speed is sampled uniformly from 0 to 5 m/s along the approach direction, which forces the policy to handle fast-approach conditions that occur naturally mid-race after clearing a gate.
 
 ---
 
-## 8. Summary
+## Domain Randomization
 
-The racing strategy combines a dense-sparse hybrid reward (progress + gate pass), a compact 20-dim body-frame observation with next-gate lookahead, a CTBR action interface decoupled from a 500 Hz body-rate PID, and PPO with wide domain randomization and a random-gate reset curriculum. The architecture choices — asymmetric actor/critic, body-frame invariant observations, sign-change gate detection — are motivated by the physical structure of the racing task and the sim-to-real transfer requirement.
+Physical parameters are sampled independently per environment on each episode reset, and during training the possible ranges for the values were expanded to cover many possible cases.
+
+---
+
+## Development Progression
+
+**Version 1.** The initial reward design had a gate pass bonus of 100.0, a progress reward of +1.0 toward an approach waypoint (the gate position offset 1 meter along the gate normal), a crash penalty of -1.0 per step, a command cost of -0.001, and a death cost of -50.0. The approach waypoint idea was that directing the drone toward a point in front of the gate on the correct side would naturally enforce approach direction. The progress reward was clamped at zero from below so the drone would not be penalized for the detours. The observation used the drone-to-gate vector in gate frame rather than body frame, and included the world-frame quaternion rather than a relative gate quaternion. Domain randomization ranges were very narrow and minimal.
+
+**Version 2.** The reward scales were adjusted: gate pass brought down to 5.0 from 100.0, progress scale raised to 1.5, crash scale set to -0.5, death cost reduced to -10.0. The progress reward changed from approach-waypoint distance to direct gate distance delta, removing the gate-normal offset. The observation switched from gate-frame position to fully body-frame position and velocity, added angular velocity, and replaced the world quaternion with the relative gate quaternion. Domain randomization ranges were widened to the final values: drag 0.25x to 4x, PID gains 40% off nominal.
+
+**Time penalty** I wanted it to go faster so I added a constant -0.01 per step was added as a time penalty, but removed it since it wasn't successful 100% of the time. 
+
+**Reset curriculum tuning.** I tried to add specific spawn logic for the power loop, first varying z offset to cover the both a horizontal and vertical arc. However, I removed both since the general lateral and height randomization already covered those states and the gate-specific logic added complexity without clear benefit.
